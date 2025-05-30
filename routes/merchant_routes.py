@@ -180,17 +180,24 @@ def list_products():
 @merchant_dashboard_bp.route('/products', methods=['POST'])
 @merchant_role_required
 def create_product():
-    data = request.get_json()
-    
-    # Calculate discount percentage if not provided
-    if 'discount_percentage' not in data and 'cost_price' in data and 'selling_price' in data:
-        data['discount_percentage'] = calculate_discount_percentage(
-            float(data['cost_price']),
-            float(data['selling_price'])
-        )
-    
-    p = MerchantProductController.create(data)
-    return jsonify(p.serialize()), 201
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'No data provided'}), HTTPStatus.BAD_REQUEST
+        
+        # Calculate discount percentage if cost_price and selling_price are provided
+        if 'cost_price' in data and 'selling_price' in data:
+            cost_price = float(data['cost_price'])
+            selling_price = float(data['selling_price'])
+            data['discount_pct'] = calculate_discount_percentage(cost_price, selling_price)
+        
+        p = MerchantProductController.create(data)
+        return jsonify(p.serialize()), HTTPStatus.CREATED
+    except ValueError as e:
+        return jsonify({'message': str(e)}), HTTPStatus.BAD_REQUEST
+    except Exception as e:
+        current_app.logger.error(f"Error creating product: {e}")
+        return jsonify({'message': 'Failed to create product'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
 @merchant_dashboard_bp.route('/products/<int:pid>', methods=['GET'])
 @merchant_role_required
@@ -201,17 +208,24 @@ def get_product(pid):
 @merchant_dashboard_bp.route('/products/<int:pid>', methods=['PUT'])
 @merchant_role_required
 def update_product(pid):
-    data = request.get_json()
-    
-    # Calculate discount percentage if not provided
-    if 'discount_percentage' not in data and 'cost_price' in data and 'selling_price' in data:
-        data['discount_percentage'] = calculate_discount_percentage(
-            float(data['cost_price']),
-            float(data['selling_price'])
-        )
-    
-    p = MerchantProductController.update(pid, data)
-    return jsonify(p.serialize()), 200
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'message': 'No data provided'}), HTTPStatus.BAD_REQUEST
+        
+        # Calculate discount percentage if cost_price and selling_price are provided
+        if 'cost_price' in data and 'selling_price' in data:
+            cost_price = float(data['cost_price'])
+            selling_price = float(data['selling_price'])
+            data['discount_pct'] = calculate_discount_percentage(cost_price, selling_price)
+        
+        p = MerchantProductController.update(pid, data)
+        return jsonify(p.serialize()), HTTPStatus.OK
+    except ValueError as e:
+        return jsonify({'message': str(e)}), HTTPStatus.BAD_REQUEST
+    except Exception as e:
+        current_app.logger.error(f"Error updating product {pid}: {e}")
+        return jsonify({'message': 'Failed to update product'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
 @merchant_dashboard_bp.route('/products/<int:pid>', methods=['DELETE'])
 @merchant_role_required

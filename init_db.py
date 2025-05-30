@@ -40,6 +40,7 @@ from models.category_attribute import CategoryAttribute
 from models.promotion import Promotion
 from models.product_promotion import ProductPromotion
 from models.tax_category import TaxCategory
+from models.homepage import HomepageCategory
 
 # --- Merchant models ---
 from models.product import Product
@@ -159,24 +160,11 @@ def init_brand_categories():
     """Initialize brand-category relationships."""
     print("\nInitializing Brand-Category Relationships:")
     print("----------------------------------------")
+    print("Brand-category relationships will be managed manually by users.")
+    print("No automatic associations will be made.")
     
-    # Get all approved brands
-    approved_brands = Brand.query.filter(Brand.approved_at.isnot(None)).all()
-    
-    # Get main categories (parent categories)
-    main_categories = Category.query.filter_by(parent_id=None).all()
-    
-    # For each brand, associate it with relevant main categories
-    for brand in approved_brands:
-        # Get existing categories for the brand
-        existing_categories = brand.categories.all()
-        
-        # Add brand to relevant main categories
-        for category in main_categories:
-            if category not in existing_categories:
-                brand.add_category(category)
-                print(f"Associated brand '{brand.name}' with category '{category.name}'")
-    
+    # No automatic associations - brands will be associated with categories
+    # through user actions in the application
     db.session.commit()
     print("Brand-category relationships initialized successfully.")
 
@@ -217,6 +205,20 @@ def init_recently_viewed():
     else:
         print("Recently viewed table already exists.")
 
+def init_homepage_categories():
+    """Initialize homepage categories table."""
+    print("\nInitializing Homepage Categories:")
+    print("--------------------------------")
+    
+    # Check if the table exists using SQLAlchemy inspector
+    inspector = db.inspect(db.engine)
+    if 'homepage_categories' not in inspector.get_table_names():
+        print("Creating homepage_categories table...")
+        HomepageCategory.__table__.create(db.engine)
+        print("Homepage categories table created successfully.")
+    else:
+        print("Homepage categories table already exists.")
+
 def init_database():
     """Initialize database tables and create super admin."""
     app = create_app()
@@ -239,6 +241,9 @@ def init_database():
 
         # Initialize recently viewed table
         init_recently_viewed()
+
+        # Initialize homepage categories table
+        init_homepage_categories()
 
         # Create super admin user
         admin_email = os.getenv("SUPER_ADMIN_EMAIL")

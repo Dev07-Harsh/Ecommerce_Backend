@@ -20,11 +20,12 @@ from controllers.superadmin.brand_request_controller import BrandRequestControll
 from controllers.superadmin.promotion_controller import PromotionController
 from controllers.superadmin.review_controller import ReviewController
 from controllers.superadmin.category_attribute_controller import CategoryAttributeController 
+from controllers.superadmin.homepage_controller import HomepageController
 
 
 superadmin_bp = Blueprint('superadmin_bp', __name__)
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}  # removed extension type .svg and .gif 
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -397,7 +398,7 @@ def upload_category_icon(cid):
         name: file
         type: file
         required: true
-        description: Icon file to upload (PNG, JPG, JPEG, GIF, SVG, WEBP)
+        description: Icon file to upload (PNG, JPG, JPEG, WEBP)
     responses:
       200:
         description: Icon uploaded successfully
@@ -922,7 +923,7 @@ def upload_brand_icon(bid):
         name: file
         type: file
         required: true
-        description: Icon file to upload (PNG, JPG, JPEG, GIF, SVG, WEBP)
+        description: Icon file to upload (PNG, JPG, JPEG, WEBP)
     responses:
       200:
         description: Icon uploaded successfully
@@ -1010,98 +1011,83 @@ def upload_brand_icon(bid):
 def update_brand(bid):
     """
     Update an existing brand.
-    ---
-    tags:
-      - SuperAdmin - Brands
-    security:
-      - Bearer: []
-    parameters:
-      - in: path
-        name: bid
-        type: integer
-        required: true
-        description: Brand ID
-      - in: body
-        name: body
-        required: true
-        schema:
-          type: object
-          properties:
-            name:
-              type: string
-              description: Brand name
-            slug:
-              type: string
-              description: Brand slug (URL-friendly identifier)
-    responses:
-      200:
-        description: Brand updated successfully
-        schema:
-          type: object
-          properties:
-            brand_id:
-              type: integer
-            name:
-              type: string
-            slug:
-              type: string
-            icon_url:
-              type: string
-            approved_by:
-              type: integer
-            approved_at:
-              type: string
-              format: date-time
-            created_at:
-              type: string
-              format: date-time
-            updated_at:
-              type: string
-              format: date-time
-      400:
-        description: Bad request - Invalid input data
-      404:
-        description: Brand not found
-      409:
-        description: Conflict - Brand with this name or slug already exists
-      500:
-        description: Internal server error
+    Now supports both:
+      - application/json  (just name/slug)
+      - multipart/form-data (name/slug + icon_file)
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({'message': 'No data provided for update'}), HTTPStatus.BAD_REQUEST
-    
+    # Determine content type
+    content_type = request.content_type or ''
     update_data = {}
-    if 'name' in data and data['name'].strip(): 
-        update_data['name'] = data['name'].strip()
-    if 'slug' in data and data['slug'].strip(): 
-        update_data['slug'] = data['slug'].strip()
-    
-    if not update_data: 
-        return jsonify({'message': 'No updatable fields (name, slug) provided or fields are empty.'}), HTTPStatus.BAD_REQUEST
 
+    # --- 1) JSON path ---
+    if content_type.startswith('application/json'):
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({'message': 'No JSON body provided'}), HTTPStatus.BAD_REQUEST
+        if 'name' in data and data['name'].strip():
+            update_data['name'] = data['name'].strip()
+        if 'slug' in data and data['slug'].strip():
+            update_data['slug'] = data['slug'].strip()
+
+    # --- 2) multipart/form-data path ---
+    elif content_type.startswith('multipart/form-data'):
+        # text fields
+        name = request.form.get('name', '').strip()
+        slug = request.form.get('slug', '').strip()
+        if name:
+            update_data['name'] = name
+        if slug:
+            update_data['slug'] = slug
+
+        # file field
+        file = request.files.get('icon_file')
+        if file and file.filename:
+            if not allowed_file(file.filename):
+                return jsonify({'message': f'Invalid icon file type. Allowed: {ALLOWED_EXTENSIONS}'}), HTTPStatus.BAD_REQUEST
+
+            try:
+                upload_result = cloudinary.uploader.upload(
+                    file,
+                    folder="brand_icons",
+                    public_id=f"brand_{bid}_{file.filename.rsplit('.', 1)[0]}",
+                    overwrite=True,
+                    resource_type="image"
+                )
+                new_url = upload_result.get('secure_url')
+                if not new_url:
+                    raise ValueError("No secure_url from Cloudinary")
+                update_data['icon_url'] = new_url
+            except Exception as e:
+                current_app.logger.error(f"Cloudinary upload failed in update: {e}")
+                return jsonify({'message': f'Icon upload failed: {str(e)}'}), HTTPStatus.INTERNAL_SERVER_ERROR
+    else:
+        return jsonify({'message': 'Unsupported Content-Type. Use JSON or multipart/form-data.'}), HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+
+    # must have at least one field to update
+    if not update_data:
+        return jsonify({'message': 'No updatable fields provided.'}), HTTPStatus.BAD_REQUEST
+
+    # Perform update
     try:
-       
         updated_brand = BrandController.update(bid, update_data)
         return jsonify(updated_brand.serialize()), HTTPStatus.OK
+
     except IntegrityError as e:
         db.session.rollback()
         current_app.logger.error(f"IntegrityError updating brand {bid}: {e}")
-        if "unique constraint" in str(e.orig).lower() or (hasattr(e.orig, 'pgcode') and e.orig.pgcode == '23505'):
-             return jsonify({'message': 'Update failed. A brand with this name or slug already exists.'}), HTTPStatus.CONFLICT
-        return jsonify({'message': 'Update failed due to a data conflict.'}), HTTPStatus.CONFLICT
-    except FileNotFoundError: 
-        return jsonify({'message': 'Brand not found'}), HTTPStatus.NOT_FOUND
+        return jsonify({'message': 'A brand with that name or slug already exists.'}), HTTPStatus.CONFLICT
+
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error updating brand {bid}: {e}")
         return jsonify({'message': f'Could not update brand: {str(e)}'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
+
 @superadmin_bp.route('/brands/<int:bid>', methods=['DELETE'])
 @super_admin_role_required
 def delete_brand(bid):
     """
-    Delete (soft delete) a brand.
+    Hard-delete a brand (remove it completely).
     ---
     tags:
       - SuperAdmin - Brands
@@ -1114,37 +1100,20 @@ def delete_brand(bid):
         required: true
         description: Brand ID
     responses:
-      200:
-        description: Brand deleted successfully
-        schema:
-          type: object
-          properties:
-            brand_id:
-              type: integer
-            name:
-              type: string
-            slug:
-              type: string
-            icon_url:
-              type: string
-            deleted_at:
-              type: string
-              format: date-time
+      204:
+        description: Brand deleted successfully (no content)
       404:
         description: Brand not found
       500:
         description: Internal server error
     """
     try:
-        
-        deleted_brand = BrandController.delete(bid)
-        return jsonify(deleted_brand.serialize()), HTTPStatus.OK
-    except FileNotFoundError: 
-        return jsonify({'message': 'Brand not found'}), HTTPStatus.NOT_FOUND
+        BrandController.delete(bid)
+        return '', HTTPStatus.NO_CONTENT
     except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error deleting brand {bid}: {e}")
+        current_app.logger.error(f"Error hard-deleting brand {bid}: {e}")
         return jsonify({'message': f'Could not delete brand: {str(e)}'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
 
 @superadmin_bp.route('/brands/<int:bid>/restore', methods=['POST']) # Or PUT
 @super_admin_role_required
@@ -2001,23 +1970,14 @@ def delete_attribute(attribute_id):
         type: integer
         required: true
         description: Attribute ID
-    responses:
+     responses:
       200:
         description: Attribute deleted successfully
         schema:
           type: object
           properties:
-            attribute_id:
-              type: integer
-            code:
+            message:
               type: string
-            name:
-              type: string
-            input_type:
-              type: string
-            deleted_at:
-              type: string
-              format: date-time
       404:
         description: Attribute not found
       409:
@@ -2026,18 +1986,20 @@ def delete_attribute(attribute_id):
         description: Internal server error
     """
     try:
-        attr = AttributeController.delete(attribute_id)
-        return jsonify(attr.serialize()), HTTPStatus.OK
-    except FileNotFoundError: 
-        return jsonify({'message': 'Attribute not found'}), HTTPStatus.NOT_FOUND
+        AttributeController.delete(attribute_id)
+        return jsonify({'message': f'Attribute with ID {attribute_id} deleted successfully.'}), HTTPStatus.OK
+    # except from_werkzeug.exceptions.NotFound:
+    #     return jsonify({'message': 'Attribute not found'}), HTTPStatus.NOT_FOUND
+    except IntegrityError as e:
+        db.session.rollback()
+        current_app.logger.warning(f"IntegrityError deleting attribute {attribute_id}: {e}")
+        if "foreign key constraint" in str(e.orig).lower():
+            return jsonify({'message': 'Cannot delete attribute. It is currently in use by other records.'}), HTTPStatus.CONFLICT
+        return jsonify({'message': f'Database conflict: {str(e)}'}), HTTPStatus.CONFLICT
     except Exception as e: 
         db.session.rollback()
         current_app.logger.error(f"Error deleting attribute {attribute_id}: {e}")
-        
-        if isinstance(e, IntegrityError) and "foreign key constraint" in str(e.orig).lower():
-            return jsonify({'message': 'Cannot delete attribute. It is currently in use by other records (e.g., attribute values, product attributes).'}), HTTPStatus.CONFLICT
         return jsonify({'message': f'Could not delete attribute: {str(e)}'}), HTTPStatus.INTERNAL_SERVER_ERROR
-
 
 # ── CATEGORY ATTRIBUTES (Associations) ───────────────────────────────────────────
 @superadmin_bp.route('/categories/<int:cid>/attributes', methods=['GET'])
@@ -2533,4 +2495,168 @@ def get_brand_categories(bid):
     except Exception as e:
         current_app.logger.error(f"Error getting categories for brand {bid}: {e}")
         return jsonify({'message': f'Could not get brand categories: {str(e)}'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+@superadmin_bp.route('/categories/main', methods=['GET'])
+@super_admin_role_required
+def list_main_categories():
+    """
+    Get list of main categories (categories without parent).
+    ---
+    tags:
+      - SuperAdmin - Categories
+    security:
+      - Bearer: []
+    responses:
+      200:
+        description: List of main categories retrieved successfully
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              slug:
+                type: string
+              parent_id:
+                type: integer
+              icon_url:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+      500:
+        description: Internal server error
+    """
+    try:
+        cats = CategoryController.get_main_categories()
+        return jsonify([c.serialize() for c in cats]), HTTPStatus.OK
+    except Exception as e:
+        current_app.logger.error(f"Error listing main categories: {e}")
+        return jsonify({'message': 'Failed to retrieve main categories.'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+@superadmin_bp.route('/homepage/categories', methods=['GET'])
+@super_admin_role_required
+def get_featured_categories():
+    """
+    Get list of featured categories for homepage.
+    ---
+    tags:
+      - SuperAdmin - Homepage
+    security:
+      - Bearer: []
+    responses:
+      200:
+        description: List of featured categories retrieved successfully
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              category_id:
+                type: integer
+              display_order:
+                type: integer
+              is_active:
+                type: boolean
+              category:
+                type: object
+                properties:
+                  category_id:
+                    type: integer
+                  name:
+                    type: string
+                  slug:
+                    type: string
+                  icon_url:
+                    type: string
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
+      500:
+        description: Internal server error
+    """
+    try:
+        categories = HomepageController.get_featured_categories()
+        return jsonify([c.serialize() for c in categories]), HTTPStatus.OK
+    except Exception as e:
+        current_app.logger.error(f"Error getting featured categories: {e}")
+        return jsonify({'message': 'Failed to retrieve featured categories.'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+@superadmin_bp.route('/homepage/categories', methods=['POST'])
+@super_admin_role_required
+def update_featured_categories():
+    """
+    Update the featured categories for homepage.
+    ---
+    tags:
+      - SuperAdmin - Homepage
+    security:
+      - Bearer: []
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          required:
+            - category_ids
+          properties:
+            category_ids:
+              type: array
+              items:
+                type: integer
+              description: List of category IDs to feature on homepage
+    responses:
+      200:
+        description: Featured categories updated successfully
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              category_id:
+                type: integer
+              display_order:
+                type: integer
+              is_active:
+                type: boolean
+              category:
+                type: object
+                properties:
+                  category_id:
+                    type: integer
+                  name:
+                    type: string
+                  slug:
+                    type: string
+                  icon_url:
+                    type: string
+      400:
+        description: Bad request - Invalid input data
+      500:
+        description: Internal server error
+    """
+    try:
+        data = request.get_json()
+        if not data or 'category_ids' not in data:
+            return jsonify({'message': 'category_ids is required'}), HTTPStatus.BAD_REQUEST
+
+        categories = HomepageController.update_featured_categories(data['category_ids'])
+        return jsonify([c.serialize() for c in categories]), HTTPStatus.OK
+    except Exception as e:
+        current_app.logger.error(f"Error updating featured categories: {e}")
+        return jsonify({'message': 'Failed to update featured categories.'}), HTTPStatus.INTERNAL_SERVER_ERROR
 

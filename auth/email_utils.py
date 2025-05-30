@@ -286,7 +286,7 @@ def send_merchant_docs_submitted_to_admin(merchant_profile, admin_email_list=Non
 
 
     subject = f"Merchant Document Submission: {merchant_profile.business_name}"
-    admin_link = f"{frontend_url}//superadmin/merchant-management" 
+    admin_link = f"{frontend_url}/superadmin/merchant-management" 
 
     template = """
     <!DOCTYPE html>

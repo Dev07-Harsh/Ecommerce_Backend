@@ -24,7 +24,7 @@ class MerchantBrandRequestController:
 
         br = BrandRequest(
             merchant_id=merchant.id,
-            name=data['name'],
+            name=data['brand_name'],
             status=BrandRequestStatus.PENDING
         )
         br.save()

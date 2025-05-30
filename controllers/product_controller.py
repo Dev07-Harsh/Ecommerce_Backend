@@ -57,6 +57,7 @@ class ProductController:
             min_price = request.args.get('min_price', type=float)
             max_price = request.args.get('max_price', type=float)
             search = request.args.get('search', '')
+            include_children = request.args.get('include_children', 'true').lower() == 'true'
             
             # Base query
             query = Product.query.filter(
@@ -66,13 +67,25 @@ class ProductController:
             
             # Apply category filter with child categories
             if category_id:
-                # Get all child category IDs
-                child_categories = Category.query.filter_by(parent_id=category_id).all()
-                child_category_ids = [cat.category_id for cat in child_categories]
-                
-                # Include both the selected category and its children
-                category_ids = [category_id] + child_category_ids
-                query = query.filter(Product.category_id.in_(category_ids))
+                if include_children:
+                    # Get the category and all its child categories
+                    category = Category.query.get(category_id)
+                    if category:
+                        # Get all child category IDs recursively
+                        def get_child_category_ids(parent_id):
+                            child_ids = []
+                            children = Category.query.filter_by(parent_id=parent_id).all()
+                            for child in children:
+                                child_ids.append(child.category_id)
+                                child_ids.extend(get_child_category_ids(child.category_id))
+                            return child_ids
+                        
+                        child_category_ids = get_child_category_ids(category_id)
+                        category_ids = [category_id] + child_category_ids
+                        query = query.filter(Product.category_id.in_(category_ids))
+                else:
+                    # Only include products from the selected category
+                    query = query.filter(Product.category_id == category_id)
             
             # Apply other filters
             if brand_id:

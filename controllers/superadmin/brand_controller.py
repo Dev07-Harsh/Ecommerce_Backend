@@ -50,15 +50,31 @@ class BrandController:
         db.session.commit()
         return brand
 
-    @staticmethod
-    def delete(brand_pk_id): 
+    # @staticmethod
+    # def delete(brand_pk_id): 
        
-        b = Brand.query.filter_by(brand_id=brand_pk_id, deleted_at=None).first_or_404(
-            description=f"Brand with ID {brand_pk_id} not found or has been deleted."
+    #     b = Brand.query.filter_by(brand_id=brand_pk_id, deleted_at=None).first_or_404(
+    #         description=f"Brand with ID {brand_pk_id} not found or has been deleted."
+    #     )
+    #     b.deleted_at = datetime.now(timezone.utc)
+    #     db.session.commit()
+    #     return b
+    
+
+    @staticmethod
+    def delete(brand_pk_id):
+        """
+        Hard-delete a brand: remove it from the database entirely.
+        """
+        b = Brand.query.filter_by(
+            brand_id=brand_pk_id
+        ).first_or_404(
+            description=f"Brand with ID {brand_pk_id} not found."
         )
-        b.deleted_at = datetime.now(timezone.utc)
+        db.session.delete(b)
         db.session.commit()
         return b
+
     @staticmethod
     def undelete(brand_pk_id):
         

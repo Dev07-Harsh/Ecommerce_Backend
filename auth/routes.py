@@ -5,7 +5,8 @@ from marshmallow import Schema, fields, validate, ValidationError, validates_sch
 from auth.controllers import (
     register_user, register_merchant, login_user, refresh_access_token,
     logout_user, verify_email, google_auth, get_current_user,
-    request_password_reset, reset_password
+    request_password_reset, reset_password,
+    resend_verification_email_controller
 )
 from auth.utils import user_role_required, merchant_role_required, admin_role_required
 from auth.models import User, MerchantProfile
@@ -824,3 +825,48 @@ def password_reset():
         return jsonify(response), status_code
     except ValidationError as e:
         return jsonify({"error": "Validation error", "details": e.messages}), 400
+    
+
+class ResendVerificationSchema(Schema):
+    email = fields.Email(required=True)
+
+
+@auth_bp.route('/verify-email/resend', methods=['POST'])
+def resend_verification_email_route():
+    """
+    Resend the email‐verification link (rate limited).
+    ---
+    tags:
+      - Authentication
+    parameters:
+      - in: body
+        name: body
+        schema:
+          type: object
+          required:
+            - email
+          properties:
+            email:
+              type: string
+              format: email
+    responses:
+      200:
+        description: “If your email is registered and unverified, a new link was sent.”
+      400:
+        description: Validation error
+      429:
+        description: Rate limit exceeded
+      500:
+        description: Internal server error
+    """
+    try:
+        # validate
+        schema = ResendVerificationSchema()
+        data = schema.load(request.json)
+
+        # hand off to your controller
+        response, status_code = resend_verification_email_controller(data['email'])
+        return jsonify(response), status_code
+
+    except ValidationError as err:
+        return jsonify({"error": "Validation error", "details": err.messages}), 400

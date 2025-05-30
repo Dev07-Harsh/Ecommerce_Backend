@@ -1,0 +1,117 @@
+from models.homepage import HomepageCategory
+from models.product import Product
+from models.category import Category
+from models.product_media import ProductMedia
+from models.enums import MediaType
+from common.database import db
+from flask import jsonify
+import logging
+
+class HomepageController:
+    @staticmethod
+    def get_homepage_products():
+        """Get products from categories that are selected for homepage display"""
+        try:
+            # Get all main categories
+            main_categories = Category.query.filter_by(parent_id=None).all()
+            
+            # Initialize response data
+            response_data = []
+            
+            # Get all product media in one query
+            all_media = ProductMedia.query.filter(
+                ProductMedia.type == MediaType.IMAGE,
+                ProductMedia.deleted_at == None
+            ).all()
+            
+            # Create a dictionary to map product IDs to their media
+            media_dict = {}
+            for media in all_media:
+                if media.product_id not in media_dict:
+                    media_dict[media.product_id] = []
+                media_dict[media.product_id].append(media)
+            
+            # Function to serialize product with media
+            def serialize_product_with_media(product):
+                product_data = product.serialize()
+                product_data['media'] = [
+                    {
+                        'media_id': media.media_id,
+                        'type': media.type.value,
+                        'url': media.url,
+                        'sort_order': media.sort_order,
+                        'public_id': media.public_id
+                    }
+                    for media in sorted(media_dict.get(product.product_id, []), key=lambda x: x.sort_order)
+                ]
+                return product_data
+
+            def get_category_products(category_id, level=0):
+                """Recursively get all products from a category and its subcategories"""
+                # Get direct products in this category
+                direct_products = Product.query.filter(
+                    Product.category_id == category_id,
+                    Product.active_flag == True,
+                    Product.deleted_at == None
+                ).all()
+                
+                # Get all subcategories
+                subcategories = Category.query.filter_by(parent_id=category_id).all()
+                
+                # Get products from all subcategories recursively
+                subcategory_products = []
+                for subcategory in subcategories:
+                    subcategory_products.extend(get_category_products(subcategory.category_id, level + 1))
+                
+                # Combine direct products with subcategory products
+                return direct_products + subcategory_products
+            
+            # Process each main category
+            for main_category in main_categories:
+                # Get subcategories
+                subcategories = Category.query.filter_by(
+                    parent_id=main_category.category_id
+                ).all()
+                
+                # Get products for main category (excluding products in subcategories)
+                main_category_products = Product.query.filter(
+                    Product.category_id == main_category.category_id,
+                    Product.active_flag == True,
+                    Product.deleted_at == None,
+                    ~Product.product_id.in_(
+                        db.session.query(Product.product_id)
+                        .join(Category, Product.category_id == Category.category_id)
+                        .filter(Category.parent_id == main_category.category_id)
+                    )
+                ).all()
+                
+                # Get products for each subcategory
+                subcategory_data = []
+                for subcategory in subcategories:
+                    # Get all products from this subcategory and its children recursively
+                    all_subcategory_products = get_category_products(subcategory.category_id)
+                    
+                    subcategory_data.append({
+                        'category': subcategory.serialize(),
+                        'products': [serialize_product_with_media(p) for p in all_subcategory_products]
+                    })
+                
+                # Add main category data to response
+                response_data.append({
+                    'category': main_category.serialize(),
+                    'products': [serialize_product_with_media(p) for p in main_category_products],
+                    'subcategories': subcategory_data
+                })
+            
+            return jsonify({
+                'status': 'success',
+                'message': 'Homepage products retrieved successfully',
+                'data': response_data
+            }), 200
+            
+        except Exception as e:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to retrieve homepage products',
+                'error': str(e)
+            }), 500 

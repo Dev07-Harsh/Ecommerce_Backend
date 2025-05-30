@@ -49,10 +49,22 @@ class CategoriesController:
             # Create a map of all categories
             category_map = {category.category_id: category.serialize() for category in categories}
             
+            # Function to get all child category IDs
+            def get_child_category_ids(category_id):
+                child_ids = []
+                for cat in categories:
+                    if cat.parent_id == category_id:
+                        child_ids.append(cat.category_id)
+                        child_ids.extend(get_child_category_ids(cat.category_id))
+                return child_ids
+
             # Organize categories into hierarchy
             root_categories = []
             for category in categories:
                 serialized_category = category_map[category.category_id]
+                # Add child category IDs to the serialized category
+                serialized_category['child_category_ids'] = get_child_category_ids(category.category_id)
+                
                 if category.parent_id is None:
                     # This is a root category
                     root_categories.append(serialized_category)

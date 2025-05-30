@@ -12,6 +12,13 @@ class CategoryController:
         return Category.query.get_or_404(category_id)
 
     @staticmethod
+    def get_main_categories():
+        """
+        Retrieve only the main categories (categories without a parent_id)
+        """
+        return Category.query.filter(Category.parent_id.is_(None)).all()
+
+    @staticmethod
     def create(data):
         cat = Category(
             name=data['name'],
