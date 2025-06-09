@@ -5,6 +5,25 @@ from sqlalchemy.exc import SQLAlchemyError
 
 class MerchantBrandController:
     @staticmethod
+    def get(brand_id):
+        """Get brand details by ID."""
+        try:
+            brand = Brand.query.filter_by(
+                brand_id=brand_id,
+                deleted_at=None
+            ).first_or_404(
+                description=f"Brand with ID {brand_id} not found."
+            )
+            return {
+                "brand_id": brand.brand_id,
+                "name": brand.name,
+                "slug": brand.slug,
+                "icon_url": brand.icon_url
+            }
+        except SQLAlchemyError as e:
+            raise SQLAlchemyError(f"Database error while fetching brand: {str(e)}")
+
+    @staticmethod
     def list_all():
         """Get all active brands"""
         return Brand.query.filter_by(deleted_at=None).all()

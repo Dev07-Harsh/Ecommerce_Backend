@@ -5,6 +5,23 @@ from models.attribute import Attribute
 
 class MerchantCategoryController:
     @staticmethod
+    def get(category_id):
+        """Get category details by ID."""
+        try:
+            category = Category.query.filter_by(category_id=category_id).first_or_404(
+                description=f"Category with ID {category_id} not found."
+            )
+            return {
+                "category_id": category.category_id,
+                "name": category.name,
+                "slug": category.slug,
+                "parent_id": category.parent_id
+            }
+        except Exception as e:
+            current_app.logger.error(f"Merchant: Error getting category {category_id}: {e}")
+            raise
+
+    @staticmethod
     def list_all():
         """Lists all active categories available to merchants."""
         try:

@@ -33,7 +33,11 @@ class CountryConfig:
                 DocumentType.DSC,
                 # Required Business Documents
                 DocumentType.RETURN_POLICY,
-                DocumentType.SHIPPING_DETAILS
+                DocumentType.SHIPPING_DETAILS,
+                # Product and Category Documents
+                DocumentType.PRODUCT_LIST,
+                DocumentType.CATEGORY_LIST,
+                DocumentType.BRAND_APPROVAL
             ],
             CountryCode.GLOBAL.value: [
                 # Business Registration
@@ -54,7 +58,11 @@ class CountryConfig:
                 DocumentType.ESIGN_CERTIFICATE,
                 # Required Business Documents
                 DocumentType.RETURN_POLICY,
-                DocumentType.SHIPPING_DETAILS
+                DocumentType.SHIPPING_DETAILS,
+                # Product and Category Documents
+                DocumentType.PRODUCT_LIST,
+                DocumentType.CATEGORY_LIST,
+                DocumentType.BRAND_APPROVAL
             ]
         }
         return configs.get(country_code, configs[CountryCode.GLOBAL.value])

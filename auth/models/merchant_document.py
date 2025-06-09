@@ -58,9 +58,13 @@ class DocumentType(enum.Enum):
     RETURN_POLICY = 'return_policy'  # Required for all merchants
     SHIPPING_DETAILS = 'shipping_details'  # Required for all merchants
     
+    # Product and Category Documents
+    PRODUCT_LIST = 'product_list'  # List of products to be sold
+    CATEGORY_LIST = 'category_list'  # List of product categories
+    BRAND_APPROVAL = 'brand_approval'  # Brand authorization and approval documents
+    
     # Other Documents
     BRAND_AUTHORIZATION = 'brand_authorization'
-    PRODUCT_IMAGES = 'product_images'
     OTHER = 'other'
 
 class VerificationStatus(enum.Enum):

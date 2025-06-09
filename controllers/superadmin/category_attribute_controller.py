@@ -1,4 +1,3 @@
-
 from models.category_attribute import CategoryAttribute
 from models.category import Category 
 from models.attribute import Attribute 
@@ -10,10 +9,39 @@ class CategoryAttributeController:
     def list_attributes_for_category(cat_id): 
         """Lists all attributes associated with a specific category."""
         
-        Category.query.filter_by(category_id=cat_id, deleted_at=None).first_or_404(
-            description=f"Category with ID {cat_id} not found."
-        )
-        return CategoryAttribute.query.filter_by(category_id=cat_id).all()
+        # Check if category exists and is not deleted
+        category = Category.query.filter_by(category_id=cat_id).first()
+        if not category:
+            raise ValueError(f"Category with ID {cat_id} not found.")
+        if category.deleted_at is not None:
+            raise ValueError(f"Category with ID {cat_id} has been deleted.")
+
+        # Get all attributes for the category with their details
+        category_attributes = db.session.query(
+            CategoryAttribute,
+            Attribute
+        ).join(
+            Attribute,
+            CategoryAttribute.attribute_id == Attribute.attribute_id
+        ).filter(
+            CategoryAttribute.category_id == cat_id
+        ).all()
+        
+        # Format the response
+        result = []
+        for ca, attr in category_attributes:
+            result.append({
+                'category_id': ca.category_id,
+                'attribute_id': ca.attribute_id,
+                'required_flag': ca.required_flag,
+                'attribute_details': {
+                    'attribute_id': attr.attribute_id,
+                    'name': attr.name,
+                    'code': attr.code
+                }
+            })
+        
+        return result
 
     @staticmethod
     def add_attribute_to_category(cat_id, data):

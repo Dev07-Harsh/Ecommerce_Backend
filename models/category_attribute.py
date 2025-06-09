@@ -10,3 +10,16 @@ class CategoryAttribute(BaseModel):
     # ←— Two sides of the association:
     category  = db.relationship('Category',  back_populates='attributes')
     attribute = db.relationship('Attribute', back_populates='categories')
+
+    def serialize(self):
+        """Convert the CategoryAttribute instance to a dictionary."""
+        return {
+            'category_id': self.category_id,
+            'attribute_id': self.attribute_id,
+            'required_flag': self.required_flag,
+            'attribute_details': {
+                'attribute_id': self.attribute.attribute_id,
+                'name': self.attribute.name,
+                'code': self.attribute.code
+            } if self.attribute else None
+        }

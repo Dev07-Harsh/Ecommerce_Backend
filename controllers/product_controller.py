@@ -4,12 +4,13 @@ from models.product import Product
 from models.category import Category
 from models.brand import Brand
 from models.product_media import ProductMedia
-from models.variant_media import VariantMedia
 from models.enums import MediaType
-from sqlalchemy import desc, or_
+from sqlalchemy import desc, or_, func
 from flask_jwt_extended import get_jwt_identity
 from models.product_meta import ProductMeta
 from models.product_attribute import ProductAttribute
+from datetime import datetime, timedelta
+from models.order import OrderItem, Order
 
 class ProductController:
     @staticmethod
@@ -24,20 +25,7 @@ class ProductController:
             ProductMedia.sort_order
         ).first()
 
-        # If no product media, get primary variant media
-        if not primary_media:
-            variant_media = VariantMedia.query.filter_by(
-                variant_id=product_id,
-                deleted_at=None,
-                media_type='image',
-                is_primary=True
-            ).first()
-            
-            if variant_media:
-                return variant_media.serialize()
-            return None
-
-        return primary_media.serialize()
+        return primary_media.serialize() if primary_media else None
 
     @staticmethod
     def get_all_products():
@@ -52,40 +40,54 @@ class ProductController:
             order = request.args.get('order', 'desc')
             
             # Get filter parameters
-            category_id = request.args.get('category_id', type=int)
+            category_id = request.args.get('category_id')
             brand_id = request.args.get('brand_id', type=int)
             min_price = request.args.get('min_price', type=float)
             max_price = request.args.get('max_price', type=float)
             search = request.args.get('search', '')
             include_children = request.args.get('include_children', 'true').lower() == 'true'
+            show_variants = request.args.get('show_variants', 'false').lower() == 'true'
             
-            # Base query
+            # Base query - only show approved products and filter by parent_product_id
             query = Product.query.filter(
                 Product.deleted_at.is_(None),
-                Product.active_flag.is_(True)
+                Product.active_flag.is_(True),
+                Product.approval_status == 'approved'  # Only show approved products
             )
+
+            # Filter based on show_variants parameter
+            if show_variants:
+                # Show only variant products (parent_product_id is not null)
+                query = query.filter(Product.parent_product_id.isnot(None))
+            else:
+                # Show only parent products (parent_product_id is null)
+                query = query.filter(Product.parent_product_id.is_(None))
             
             # Apply category filter with child categories
             if category_id:
-                if include_children:
-                    # Get the category and all its child categories
-                    category = Category.query.get(category_id)
-                    if category:
-                        # Get all child category IDs recursively
-                        def get_child_category_ids(parent_id):
-                            child_ids = []
-                            children = Category.query.filter_by(parent_id=parent_id).all()
-                            for child in children:
-                                child_ids.append(child.category_id)
-                                child_ids.extend(get_child_category_ids(child.category_id))
-                            return child_ids
-                        
-                        child_category_ids = get_child_category_ids(category_id)
-                        category_ids = [category_id] + child_category_ids
-                        query = query.filter(Product.category_id.in_(category_ids))
-                else:
-                    # Only include products from the selected category
-                    query = query.filter(Product.category_id == category_id)
+                try:
+                    category_id = int(category_id)
+                    if include_children:
+                        # Get the category and all its child categories
+                        category = Category.query.get(category_id)
+                        if category:
+                            # Get all child category IDs recursively
+                            def get_child_category_ids(parent_id):
+                                child_ids = []
+                                children = Category.query.filter_by(parent_id=parent_id).all()
+                                for child in children:
+                                    child_ids.append(child.category_id)
+                                    child_ids.extend(get_child_category_ids(child.category_id))
+                                return child_ids
+                            
+                            child_category_ids = get_child_category_ids(category_id)
+                            category_ids = [category_id] + child_category_ids
+                            query = query.filter(Product.category_id.in_(category_ids))
+                    else:
+                        # Only include products from the selected category
+                        query = query.filter(Product.category_id == category_id)
+                except ValueError:
+                    print(f"Invalid category_id: {category_id}")
             
             # Apply other filters
             if brand_id:
@@ -173,7 +175,8 @@ class ProductController:
         product = Product.query.filter_by(
             product_id=product_id,
             deleted_at=None,
-            active_flag=True
+            active_flag=True,
+            approval_status='approved'  # Only show approved products
         ).first_or_404()
         
         # Get product data with media
@@ -201,7 +204,10 @@ class ProductController:
             
             products = []
             for rv in recently_viewed:
-                if rv.product and rv.product.active_flag and not rv.product.deleted_at:
+                if (rv.product and 
+                    rv.product.active_flag and 
+                    not rv.product.deleted_at and 
+                    rv.product.approval_status == 'approved'):  # Only show approved products
                     product_dict = rv.product.serialize()
                     media = ProductController.get_product_media(rv.product.product_id)
                     if media:
@@ -241,11 +247,12 @@ class ProductController:
     def get_product_details(product_id):
         """Get detailed product information including media, meta data, and attributes"""
         try:
-            # Get base product information
+            # Get base product information - only show approved products
             product = Product.query.filter_by(
                 product_id=product_id,
                 deleted_at=None,
-                active_flag=True
+                active_flag=True,
+                approval_status='approved'  # Only show approved products
             ).first_or_404()
 
             # Get product media
@@ -343,4 +350,514 @@ class ProductController:
             return jsonify({
                 "error": "Failed to fetch product details",
                 "message": str(e)
+            }), 500 
+
+    @staticmethod
+    def get_products_by_brand(brand_slug):
+        """Get products filtered by brand slug"""
+        try:
+            # Get pagination parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 10, type=int), 50)
+            
+            # Get sorting parameters
+            sort_by = request.args.get('sort_by', 'created_at')
+            order = request.args.get('order', 'desc')
+            
+            # Get filter parameters
+            category_id = request.args.get('category_id')
+            min_price = request.args.get('min_price', type=float)
+            max_price = request.args.get('max_price', type=float)
+            search = request.args.get('search', '')
+            
+            # Get brand by slug
+            brand = Brand.query.filter_by(
+                slug=brand_slug,
+                deleted_at=None
+            ).first_or_404()
+            
+            # Base query - only show approved products and parent products
+            query = Product.query.filter(
+                Product.deleted_at.is_(None),
+                Product.active_flag.is_(True),
+                Product.approval_status == 'approved',
+                Product.brand_id == brand.brand_id,
+                Product.parent_product_id.is_(None)  # Only show parent products
+            )
+            
+            # Apply category filter
+            if category_id:
+                try:
+                    category_id = int(category_id)
+                    query = query.filter(Product.category_id == category_id)
+                except ValueError:
+                    print(f"Invalid category_id: {category_id}")
+            
+            # Apply other filters
+            if min_price is not None:
+                query = query.filter(Product.selling_price >= min_price)
+            if max_price is not None:
+                query = query.filter(Product.selling_price <= max_price)
+            if search:
+                search_term = f"%{search}%"
+                query = query.filter(
+                    or_(
+                        Product.product_name.ilike(search_term),
+                        Product.product_description.ilike(search_term)
+                    )
+                )
+                
+            # Apply sorting
+            if order == 'asc':
+                query = query.order_by(getattr(Product, sort_by))
+            else:
+                query = query.order_by(desc(getattr(Product, sort_by)))
+                
+            # Execute paginated query
+            pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            # Prepare response
+            products = pagination.items
+            total = pagination.total
+            pages = pagination.pages
+            
+            # Get product data with media
+            product_data = []
+            for product in products:
+                product_dict = product.serialize()
+                # Add frontend-specific fields
+                product_dict.update({
+                    'id': str(product.product_id),
+                    'name': product.product_name,
+                    'description': product.product_description,
+                    'price': float(product.selling_price),
+                    'originalPrice': float(product.cost_price),
+                    'stock': 100,
+                    'isNew': True,
+                    'isBuiltIn': False,
+                })
+                
+                # Get primary media
+                media = ProductController.get_product_media(product.product_id)
+                if media:
+                    product_dict['primary_image'] = media['url']
+                    product_dict['image'] = media['url']
+                
+                product_data.append(product_dict)
+            
+            return jsonify({
+                'products': product_data,
+                'pagination': {
+                    'total': total,
+                    'pages': pages,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': pagination.has_next,
+                    'has_prev': pagination.has_prev
+                },
+                'brand': brand.serialize()
+            })
+            
+        except Exception as e:
+            print(f"Error in get_products_by_brand: {str(e)}")
+            return jsonify({
+                'error': str(e),
+                'products': [],
+                'pagination': {
+                    'total': 0,
+                    'pages': 0,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False
+                }
+            }), 500
+
+    @staticmethod
+    def get_products_by_category(category_id):
+        """Get products filtered by category ID"""
+        try:
+            # Get pagination parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 10, type=int), 50)
+            
+            # Get sorting parameters
+            sort_by = request.args.get('sort_by', 'created_at')
+            order = request.args.get('order', 'desc')
+            
+            # Get filter parameters
+            min_price = request.args.get('min_price', type=float)
+            max_price = request.args.get('max_price', type=float)
+            search = request.args.get('search', '')
+            include_children = request.args.get('include_children', 'true').lower() == 'true'
+            
+            # Get category
+            category = Category.query.get_or_404(category_id)
+            
+            # Base query - only show approved products and parent products
+            query = Product.query.filter(
+                Product.deleted_at.is_(None),
+                Product.active_flag.is_(True),
+                Product.approval_status == 'approved',
+                Product.parent_product_id.is_(None)  # Only show parent products
+            )
+            
+            # Apply category filter with child categories
+            if include_children:
+                # Get all child category IDs recursively
+                def get_child_category_ids(parent_id):
+                    child_ids = []
+                    children = Category.query.filter_by(parent_id=parent_id).all()
+                    for child in children:
+                        child_ids.append(child.category_id)
+                        child_ids.extend(get_child_category_ids(child.category_id))
+                    return child_ids
+                
+                child_category_ids = get_child_category_ids(category_id)
+                category_ids = [category_id] + child_category_ids
+                query = query.filter(Product.category_id.in_(category_ids))
+            else:
+                # Only include products from the selected category
+                query = query.filter(Product.category_id == category_id)
+            
+            # Apply other filters
+            if min_price is not None:
+                query = query.filter(Product.selling_price >= min_price)
+            if max_price is not None:
+                query = query.filter(Product.selling_price <= max_price)
+            if search:
+                search_term = f"%{search}%"
+                query = query.filter(
+                    or_(
+                        Product.product_name.ilike(search_term),
+                        Product.product_description.ilike(search_term)
+                    )
+                )
+                
+            # Apply sorting
+            if order == 'asc':
+                query = query.order_by(getattr(Product, sort_by))
+            else:
+                query = query.order_by(desc(getattr(Product, sort_by)))
+                
+            # Execute paginated query
+            pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            # Prepare response
+            products = pagination.items
+            total = pagination.total
+            pages = pagination.pages
+            
+            # Get product data with media
+            product_data = []
+            for product in products:
+                product_dict = product.serialize()
+                # Add frontend-specific fields
+                product_dict.update({
+                    'id': str(product.product_id),
+                    'name': product.product_name,
+                    'description': product.product_description,
+                    'price': float(product.selling_price),
+                    'originalPrice': float(product.cost_price),
+                    'stock': 100,
+                    'isNew': True,
+                    'isBuiltIn': False,
+                })
+                
+                # Get primary media
+                media = ProductController.get_product_media(product.product_id)
+                if media:
+                    product_dict['primary_image'] = media['url']
+                    product_dict['image'] = media['url']
+                
+                product_data.append(product_dict)
+            
+            return jsonify({
+                'products': product_data,
+                'pagination': {
+                    'total': total,
+                    'pages': pages,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': pagination.has_next,
+                    'has_prev': pagination.has_prev
+                },
+                'category': category.serialize()
+            })
+            
+        except Exception as e:
+            print(f"Error in get_products_by_category: {str(e)}")
+            return jsonify({
+                'error': str(e),
+                'products': [],
+                'pagination': {
+                    'total': 0,
+                    'pages': 0,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False
+                }
+            }), 500 
+
+    @staticmethod
+    def get_product_variants(product_id):
+        """Get all variants for a parent product"""
+        try:
+            # Get the parent product to verify it exists
+            parent_product = Product.query.filter_by(
+                product_id=product_id,
+                deleted_at=None,
+                active_flag=True,
+                approval_status='approved'
+            ).first_or_404()
+
+            # Get all variants for this parent product
+            variants = Product.query.filter_by(
+                parent_product_id=product_id,
+                deleted_at=None,
+                active_flag=True,
+                approval_status='approved'
+            ).all()
+
+            # Prepare response data
+            variant_data = []
+            for variant in variants:
+                variant_dict = variant.serialize()
+                # Add frontend-specific fields
+                variant_dict.update({
+                    'id': str(variant.product_id),
+                    'name': variant.product_name,
+                    'description': variant.product_description,
+                    'price': float(variant.selling_price),
+                    'originalPrice': float(variant.cost_price),
+                    'stock': 100,  # TODO: Add stock tracking
+                    'isNew': True,  # TODO: Add logic for new products
+                    'isBuiltIn': False,  # TODO: Add logic for built-in products
+                    'isVariant': True,
+                    'parentProductId': str(product_id)
+                })
+                
+                # Get primary media
+                media = ProductController.get_product_media(variant.product_id)
+                if media:
+                    variant_dict['primary_image'] = media['url']
+                    variant_dict['image'] = media['url']
+                
+                variant_data.append(variant_dict)
+
+            return jsonify({
+                'variants': variant_data,
+                'total': len(variant_data)
+            })
+
+        except Exception as e:
+            print(f"Error in get_product_variants: {str(e)}")
+            return jsonify({
+                'error': 'Failed to fetch product variants',
+                'message': str(e)
+            }), 500 
+
+    @staticmethod
+    def get_new_products():
+        """Get products that were added within the last week (excluding variants)"""
+        try:
+            # Get pagination parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 10, type=int), 50)
+            
+            # Calculate the date one week ago
+            one_week_ago = datetime.utcnow() - timedelta(days=7)
+            
+            # Base query - only show approved products added within last week and exclude variants
+            query = Product.query.filter(
+                Product.deleted_at.is_(None),
+                Product.active_flag.is_(True),
+                Product.approval_status == 'approved',
+                Product.created_at >= one_week_ago,
+                Product.parent_product_id.is_(None)  # Exclude variants
+            )
+            
+            # Execute paginated query
+            pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            # Prepare response
+            products = pagination.items
+            total = pagination.total
+            pages = pagination.pages
+            
+            # Get product data with media
+            product_data = []
+            for product in products:
+                product_dict = product.serialize()
+                # Add frontend-specific fields
+                product_dict.update({
+                    'id': str(product.product_id),
+                    'name': product.product_name,
+                    'description': product.product_description,
+                    'price': float(product.selling_price),
+                    'originalPrice': float(product.cost_price),
+                    'stock': 100,  # TODO: Add stock tracking
+                    'isNew': True,  # These are new products
+                    'isBuiltIn': False,
+                })
+                
+                # Get primary media
+                media = ProductController.get_product_media(product.product_id)
+                if media:
+                    product_dict['primary_image'] = media['url']
+                    product_dict['image'] = media['url']
+                
+                product_data.append(product_dict)
+            
+            return jsonify({
+                'products': product_data,
+                'pagination': {
+                    'total': total,
+                    'pages': pages,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': pagination.has_next,
+                    'has_prev': pagination.has_prev
+                }
+            })
+            
+        except Exception as e:
+            print(f"Error in get_new_products: {str(e)}")
+            return jsonify({
+                'error': str(e),
+                'products': [],
+                'pagination': {
+                    'total': 0,
+                    'pages': 0,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False
+                }
+            }), 500 
+
+    @staticmethod
+    def get_trendy_deals():
+        """Get products that have been ordered the most (trendy deals)"""
+        try:
+            # Get pagination parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 10, type=int), 50)
+            
+            # Calculate the date one month ago for recent orders
+            one_month_ago = datetime.utcnow() - timedelta(days=30)
+            
+            # Query to get products ordered the most in the last month
+            from sqlalchemy import func, desc
+            
+            # First, get all completed orders from the last month
+            recent_orders = db.session.query(Order).filter(
+                Order.order_status == 'completed',
+                Order.order_date >= one_month_ago
+            ).all()
+            
+            if not recent_orders:
+                # If no recent orders, get all completed orders
+                recent_orders = db.session.query(Order).filter(
+                    Order.order_status == 'completed'
+                ).all()
+            
+            # Get order IDs
+            order_ids = [order.order_id for order in recent_orders]
+            
+            # Get product IDs and their order counts
+            product_counts = db.session.query(
+                OrderItem.product_id,
+                func.sum(OrderItem.quantity).label('total_ordered')
+            ).filter(
+                OrderItem.order_id.in_(order_ids),
+                OrderItem.product_id.isnot(None)
+            ).group_by(
+                OrderItem.product_id
+            ).order_by(
+                desc('total_ordered')
+            ).limit(per_page).all()
+            
+            print(f"Found {len(product_counts)} products with orders")
+            
+            # Get the product IDs
+            product_ids = [pc[0] for pc in product_counts]
+            
+            if not product_ids:
+                # If no products found, get some active products as fallback
+                products = Product.query.filter(
+                    Product.deleted_at.is_(None),
+                    Product.active_flag.is_(True),
+                    Product.approval_status == 'approved',
+                    Product.parent_product_id.is_(None)
+                ).limit(per_page).all()
+            else:
+                # Get the products with their details
+                products = Product.query.filter(
+                    Product.product_id.in_(product_ids),
+                    Product.deleted_at.is_(None),
+                    Product.active_flag.is_(True),
+                    Product.approval_status == 'approved',
+                    Product.parent_product_id.is_(None)
+                ).all()
+            
+            # Create a dictionary to store order counts
+            order_counts = {pc[0]: pc[1] for pc in product_counts}
+            
+            # Sort products based on order counts
+            products.sort(key=lambda p: order_counts.get(p.product_id, 0), reverse=True)
+            
+            # Prepare response
+            product_data = []
+            for product in products:
+                product_dict = product.serialize()
+                # Add frontend-specific fields
+                product_dict.update({
+                    'id': str(product.product_id),
+                    'name': product.product_name,
+                    'description': product.product_description,
+                    'price': float(product.selling_price),
+                    'originalPrice': float(product.cost_price),
+                    'stock': 100,  # TODO: Add stock tracking
+                    'isNew': True,  # TODO: Add logic for new products
+                    'isBuiltIn': False,
+                    'orderCount': order_counts.get(product.product_id, 0)  # Add order count
+                })
+                
+                # Get primary media
+                media = ProductController.get_product_media(product.product_id)
+                if media:
+                    product_dict['primary_image'] = media['url']
+                    product_dict['image'] = media['url']
+                
+                product_data.append(product_dict)
+            
+            print(f"Returning {len(product_data)} products")
+            
+            return jsonify({
+                'products': product_data,
+                'pagination': {
+                    'total': len(product_data),
+                    'pages': 1,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False
+                }
+            })
+            
+        except Exception as e:
+            print(f"Error in get_trendy_deals: {str(e)}")
+            return jsonify({
+                'error': str(e),
+                'products': [],
+                'pagination': {
+                    'total': 0,
+                    'pages': 0,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False
+                }
             }), 500 

@@ -61,8 +61,8 @@ class PaymentMethodEnum(Enum):
     WALLET = "wallet"
     COD = "cash_on_delivery"
     BANK_TRANSFER = "bank_transfer"
-    PAYPAL = "paypal" # Example
-    STRIPE = "stripe" # Example
+    PAYPAL = "paypal"
+    STRIPE = "stripe"
     OTHER = "other"
 
 class PaymentStatusEnum(Enum):
@@ -98,3 +98,13 @@ class OrderItemStatusEnum(Enum): # Status per line item, useful in multi-merchan
     RETURN_REJECTED = "return_rejected"
     RETURNED = "returned"
     REFUNDED = "refunded"
+
+class CardTypeEnum(Enum):
+    CREDIT = 'credit'
+    DEBIT = 'debit'
+
+class CardStatusEnum(Enum):
+    ACTIVE = 'active'
+    EXPIRED = 'expired'
+    SUSPENDED = 'suspended'
+    DELETED = 'deleted'
