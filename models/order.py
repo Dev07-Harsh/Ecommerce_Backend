@@ -86,29 +86,21 @@ class OrderItem(BaseModel):
     order_item_id = db.Column(db.Integer, primary_key=True)
     order_id = db.Column(db.String(50), db.ForeignKey('orders.order_id', ondelete='CASCADE'), nullable=False, index=True)
     product_id = db.Column(db.Integer, db.ForeignKey('products.product_id', ondelete='SET NULL'), nullable=True)
-    variant_id = db.Column(db.Integer, db.ForeignKey('variants.variant_id', ondelete='SET NULL'), nullable=True) 
     merchant_id = db.Column(db.Integer, db.ForeignKey('merchant_profiles.id', ondelete='SET NULL'), nullable=True, index=True)
 
     product_name_at_purchase = db.Column(db.String(255), nullable=False)
-    variant_details_at_purchase = db.Column(db.JSON, nullable=True) 
-    sku_at_purchase = db.Column(db.String(100), nullable=False) 
+    sku_at_purchase = db.Column(db.String(100), nullable=True) 
 
     quantity = db.Column(db.Integer, nullable=False)
     unit_price_at_purchase = db.Column(db.Numeric(10, 2), nullable=False) # Price per unit
-    # Subtotal for this line item before any order-level discounts/taxes
     item_subtotal_amount = db.Column(db.Numeric(12, 2), nullable=False) 
-    # Optionally store discount and tax applied specifically to this item if needed
-    # item_discount_amount = db.Column(db.Numeric(12, 2), default=Decimal('0.00'))
-    # item_tax_amount = db.Column(db.Numeric(12, 2), default=Decimal('0.00'))
     final_price_for_item = db.Column(db.Numeric(12, 2), nullable=False) 
-
 
     item_status = db.Column(db.Enum(OrderItemStatusEnum), nullable=False, default=OrderItemStatusEnum.PENDING_FULFILLMENT)
     # created_at, updated_at from BaseModel
 
     order = db.relationship('Order', back_populates='items')
     product = db.relationship('Product', lazy='joined')
-    variant = db.relationship('Variant', lazy='joined') 
     merchant = db.relationship('MerchantProfile', lazy='joined')
 
     def __repr__(self):
@@ -119,10 +111,8 @@ class OrderItem(BaseModel):
             "order_item_id": self.order_item_id,
             "order_id": self.order_id,
             "product_id": self.product_id,
-            "variant_id": self.variant_id,
             "merchant_id": self.merchant_id,
             "product_name_at_purchase": self.product_name_at_purchase,
-            "variant_details_at_purchase": self.variant_details_at_purchase,
             "sku_at_purchase": self.sku_at_purchase,
             "quantity": self.quantity,
             "unit_price_at_purchase": str(self.unit_price_at_purchase),

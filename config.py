@@ -47,6 +47,8 @@ class Config:
 
     FRONTEND_URL = 'http://localhost:5173'
 
+    EXCHANGE_RATE_API_KEY = os.getenv('EXCHANGE_RATE_API_KEY', 'f60545f362ec1fdd1e5e7338')
+
 class DevelopmentConfig(Config):
     """Configuration for development environment."""
     DEBUG = True

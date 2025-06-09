@@ -52,24 +52,22 @@ class MerchantProductPlacementController:
         return placement
 
     @staticmethod
-    def add_product_to_placement(product_id, placement_type_str, sort_order=0, placement_duration_days=30):
+    def add_product_to_placement(product_id, placement_type_str, sort_order=0, promotional_price=None, special_start=None, special_end=None):
         """
         Adds a merchant's product to a specific placement type (FEATURED or PROMOTED).
+        For PROMOTED placements, also updates the product's special pricing and dates.
         """
         merchant = MerchantProductPlacementController._get_current_merchant()
 
-        
         if not merchant.can_place_premium:
             raise PermissionError("Your account does not have an active subscription for premium product placements.")
 
-    
         try:
             placement_type_enum = PlacementTypeEnum[placement_type_str.upper()]
         except KeyError:
             allowed_types = [t.name for t in PlacementTypeEnum]
             raise ValueError(f"Invalid placement_type '{placement_type_str}'. Allowed types are: {', '.join(allowed_types)}")
 
-       
         product = Product.query.filter_by(
             product_id=product_id,
             merchant_id=merchant.id,
@@ -78,33 +76,59 @@ class MerchantProductPlacementController:
             description=f"Product with ID {product_id} not found or does not belong to you."
         )
 
-        
+        # Validate promotional data for PROMOTED placements
+        if placement_type_enum == PlacementTypeEnum.PROMOTED:
+            if not promotional_price or not special_start or not special_end:
+                raise ValueError("Promotional price, start date, and end date are required for promoted products.")
+            
+            try:
+                promotional_price = float(promotional_price)
+                if promotional_price <= 0:
+                    raise ValueError("Promotional price must be greater than 0.")
+            except ValueError:
+                raise ValueError("Invalid promotional price format.")
+
+            try:
+                special_start_date = datetime.strptime(special_start, '%Y-%m-%d').date()
+                special_end_date = datetime.strptime(special_end, '%Y-%m-%d').date()
+                
+                if special_start_date < datetime.now().date():
+                    raise ValueError("Special start date cannot be in the past.")
+                if special_end_date <= special_start_date:
+                    raise ValueError("Special end date must be after start date.")
+                if (special_end_date - special_start_date).days > 30:
+                    raise ValueError("Promotion period cannot exceed 30 days.")
+            except ValueError as e:
+                raise ValueError(f"Invalid date format or {str(e)}")
+
         current_placements_count = ProductPlacement.count_placements_by_merchant_and_type(
             merchant.id, placement_type_enum
         )
         if current_placements_count >= MerchantProductPlacementController.PLACEMENT_LIMIT_PER_TYPE:
             raise ValueError(f"You have reached the limit of {MerchantProductPlacementController.PLACEMENT_LIMIT_PER_TYPE} products for '{placement_type_enum.value}' placements. Please remove an existing one to add a new product.")
 
-       
-        expires_at_date = None
-        if placement_duration_days: 
-            expires_at_date = datetime.now(timezone.utc) + timedelta(days=placement_duration_days)
-        
-        # 6. Create the placement
         try:
+            # Update product with promotional data if it's a PROMOTED placement
+            if placement_type_enum == PlacementTypeEnum.PROMOTED:
+                product.special_price = promotional_price
+                product.special_start = special_start_date
+                product.special_end = special_end_date
+                db.session.add(product)
+
+            # Create the placement
             new_placement = ProductPlacement(
                 product_id=product.product_id,
                 merchant_id=merchant.id,
                 placement_type=placement_type_enum,
                 sort_order=int(sort_order),
-                is_active=True, 
-                expires_at=expires_at_date,
-                added_at=datetime.now(timezone.utc) 
+                is_active=True,
+                expires_at=special_end_date if placement_type_enum == PlacementTypeEnum.PROMOTED else None,
+                added_at=datetime.now(timezone.utc)
             )
             db.session.add(new_placement)
             db.session.commit()
             return new_placement
-        except IntegrityError as e: 
+        except IntegrityError as e:
             db.session.rollback()
             current_app.logger.warning(f"IntegrityError adding product {product_id} to {placement_type_str} for merchant {merchant.id}: {e}")
             raise ValueError(f"This product is already in '{placement_type_str}' placements.") from e

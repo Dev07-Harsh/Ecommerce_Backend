@@ -28,8 +28,14 @@ class BrandController:
             # Get brands
             brands = query.limit(per_page).all()
             
-            # Serialize the brands
-            brands_data = [brand.serialize() for brand in brands]
+            # Serialize the brands with icon URLs
+            brands_data = [{
+                'brand_id': brand.brand_id,
+                'name': brand.name,
+                'slug': brand.slug,
+                'icon_url': brand.icon_url,
+                'categories': [category.serialize() for category in brand.categories]
+            } for brand in brands]
             
             return jsonify(brands_data)
         except Exception as e:
@@ -44,7 +50,32 @@ class BrandController:
             if not brand:
                 return jsonify({'error': 'Brand not found'}), 404
             
-            return jsonify(brand.serialize())
+            # Return brand data with icon URL
+            brand_data = {
+                'brand_id': brand.brand_id,
+                'name': brand.name,
+                'slug': brand.slug,
+                'icon_url': brand.icon_url,
+                'categories': [category.serialize() for category in brand.categories]
+            }
+            
+            return jsonify(brand_data)
         except Exception as e:
             print(f"Error fetching brand: {str(e)}")
             return jsonify({'error': 'Internal server error'}), 500
+
+    @staticmethod
+    def get_brand_icons():
+        """Get only brand icons and basic info"""
+        try:
+            brands = Brand.query.all()
+            icons_data = [{
+                'brand_id': brand.brand_id,
+                'name': brand.name,
+                'slug': brand.slug,
+                'icon_url': brand.icon_url
+            } for brand in brands]
+            return jsonify(icons_data)
+        except Exception as e:
+            print(f"Error fetching brand icons: {str(e)}")
+            return jsonify([]), 500

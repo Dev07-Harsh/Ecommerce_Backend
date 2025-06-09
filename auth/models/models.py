@@ -92,6 +92,12 @@ class User(BaseModel):
         lazy='dynamic'
     )
 
+    payment_cards = db.relationship(
+        'PaymentCard', 
+        back_populates='user', 
+        lazy='dynamic', 
+        cascade='all, delete-orphan'
+    )
 
     def set_password(self, password):
         """Hash password."""
@@ -172,12 +178,18 @@ class MerchantProfile(BaseModel):
     required_documents = db.Column(db.JSON, nullable=True)  # List of required document types based on country
     submitted_documents = db.Column(db.JSON, nullable=True)  # List of submitted document types
     
-    # --- NEW FIELD for Premium Placement Subscription ---
+    # Subscription Information
+    is_subscribed = db.Column(db.Boolean, default=False, nullable=False, server_default=db.false())
+    subscription_plan_id = db.Column(db.Integer, db.ForeignKey('subscription_plans.plan_id'), nullable=True)
+    subscription_started_at = db.Column(db.DateTime, nullable=True)
+    subscription_expires_at = db.Column(db.DateTime, nullable=True)
     can_place_premium = db.Column(db.Boolean, default=False, nullable=False, server_default=db.false())
 
     # Relationships
     user = db.relationship('User', back_populates='merchant_profile')
     documents = db.relationship('MerchantDocument', back_populates='merchant', cascade='all, delete-orphan')
+    subscription_plan = db.relationship('SubscriptionPlan', back_populates='merchant_profiles')
+    subscription_histories = db.relationship('SubscriptionHistory', back_populates='merchant', cascade='all, delete-orphan')
     product_placements = db.relationship('ProductPlacement', back_populates='merchant', lazy='dynamic', cascade='all, delete-orphan')
     
     

@@ -1,165 +1,288 @@
-from flask import Blueprint, request, jsonify, abort
+from flask import current_app
 from common.database import db
-from models.product_stock import ProductStock
 from models.product import Product
+from models.product_stock import ProductStock
+from sqlalchemy import or_, desc
+import logging
 from auth.models.models import MerchantProfile
-from flask_jwt_extended import get_jwt_identity
+from models.category import Category
+from models.brand import Brand
 
-product_stock_bp = Blueprint('product_stock', __name__)
+logger = logging.getLogger(__name__)
 
 class MerchantProductStockController:
     @staticmethod
     def get(pid):
-        user_id = get_jwt_identity()
-        merchant = MerchantProfile.get_by_user_id(user_id)
-        if not merchant:
-            abort(404, "Merchant profile not found")
-
-        product = Product.query.filter_by(
-            product_id=pid,
-            merchant_id=merchant.id
-        ).first_or_404()
-
-        stock = ProductStock.query.filter_by(product_id=pid).first()
-        if not stock:
-            stock = ProductStock(product_id=pid)
-            db.session.add(stock)
-            db.session.commit()
-        return stock
+        try:
+            # Get product with all its details
+            product = Product.query.get_or_404(pid)
+            
+            # Get stock information through the relationship
+            stock = product.stock
+            
+            if not stock:
+                stock = ProductStock(product_id=pid)
+                db.session.add(stock)
+                db.session.commit()
+            
+            return {
+                'product': product.serialize(),
+                'stock': stock.serialize(),
+                'available': stock.stock_qty > 0,
+                'low_stock': stock.stock_qty <= stock.low_stock_threshold
+            }
+        except Exception as e:
+            logger.error(f"Error getting product stock: {e}")
+            db.session.rollback()
+            raise
 
     @staticmethod
     def update(pid, data):
-        user_id = get_jwt_identity()
-        merchant = MerchantProfile.get_by_user_id(user_id)
-        if not merchant:
-            abort(404, "Merchant profile not found")
-
-        product = Product.query.filter_by(
-            product_id=pid,
-            merchant_id=merchant.id
-        ).first_or_404()
-
-        stock = ProductStock.query.filter_by(product_id=pid).first()
-        if not stock:
-            stock = ProductStock(product_id=pid)
-            db.session.add(stock)
-
-        if 'stock_qty' in data:
-            if not isinstance(data['stock_qty'], int) or data['stock_qty'] < 0:
-                abort(400, "Invalid stock quantity")
-            stock.stock_qty = data['stock_qty']
-
-        if 'low_stock_threshold' in data:
-            if not isinstance(data['low_stock_threshold'], int) or data['low_stock_threshold'] < 0:
-                abort(400, "Invalid low stock threshold")
-            stock.low_stock_threshold = data['low_stock_threshold']
-
-        db.session.commit()
-        return stock
+        try:
+            product = Product.query.get_or_404(pid)
+            stock = product.stock
+            if not stock:
+                stock = ProductStock(product_id=pid)
+                db.session.add(stock)
+            
+            if 'stock_qty' in data:
+                stock.stock_qty = data['stock_qty']
+            if 'low_stock_threshold' in data:
+                stock.low_stock_threshold = data['low_stock_threshold']
+            
+            db.session.commit()
+            
+            return {
+                'id': product.product_id,
+                'name': product.product_name,
+                'sku': product.sku,
+                'category': product.category.name if product.category else None,
+                'brand': product.brand.name if product.brand else None,
+                'stock_qty': stock.stock_qty,
+                'low_stock_threshold': stock.low_stock_threshold,
+                'available': stock.stock_qty > 0,
+                'low_stock': stock.stock_qty <= stock.low_stock_threshold,
+                'image_url': product.media[0].url if product.media else None
+            }
+        except Exception as e:
+            logger.error(f"Error updating product stock: {e}")
+            db.session.rollback()
+            raise
 
     @staticmethod
     def bulk_update(pid, data):
-        user_id = get_jwt_identity()
-        merchant = MerchantProfile.get_by_user_id(user_id)
-        if not merchant:
-            abort(404, "Merchant profile not found")
-
-        if not isinstance(data, list):
-            abort(400, "Invalid data format")
-
-        results = []
-        for item in data:
-            if not isinstance(item, dict) or 'product_id' not in item or 'stock_qty' not in item:
-                continue
-
-            product = Product.query.filter_by(
-                product_id=item['product_id'],
-                merchant_id=merchant.id
-            ).first()
-
-            if not product:
-                continue
-
-            stock = ProductStock.query.filter_by(product_id=item['product_id']).first()
-            if not stock:
-                stock = ProductStock(product_id=item['product_id'])
-                db.session.add(stock)
-
-            if not isinstance(item['stock_qty'], int) or item['stock_qty'] < 0:
-                continue
-
-            stock.stock_qty = item['stock_qty']
-            if 'low_stock_threshold' in item and isinstance(item['low_stock_threshold'], int):
-                stock.low_stock_threshold = item['low_stock_threshold']
-
-            results.append(stock)
-
-        db.session.commit()
-        return results
+        try:
+            if not isinstance(data, list):
+                raise ValueError("Data must be a list of stock updates")
+            
+            product = Product.query.get_or_404(pid)
+            results = []
+            
+            for item in data:
+                if not isinstance(item, dict) or 'variant_id' not in item:
+                    raise ValueError("Each item must be a dictionary with 'variant_id'")
+                
+                variant_id = item['variant_id']
+                stock_qty = item.get('stock_qty', 0)
+                low_stock_threshold = item.get('low_stock_threshold', 0)
+                
+                # Update variant stock
+                variant_stock = ProductStock.query.filter_by(product_id=pid, variant_id=variant_id).first()
+                if not variant_stock:
+                    variant_stock = ProductStock(product_id=pid, variant_id=variant_id)
+                    db.session.add(variant_stock)
+                
+                variant_stock.stock_qty = stock_qty
+                variant_stock.low_stock_threshold = low_stock_threshold
+                
+                results.append({
+                    'variant_id': variant_id,
+                    'stock': variant_stock.serialize(),
+                    'available': stock_qty > 0,
+                    'low_stock': stock_qty <= low_stock_threshold
+                })
+            
+            db.session.commit()
+            return results
+        except Exception as e:
+            logger.error(f"Error bulk updating product stock: {e}")
+            db.session.rollback()
+            raise
 
     @staticmethod
     def get_low_stock():
-        user_id = get_jwt_identity()
-        merchant = MerchantProfile.get_by_user_id(user_id)
-        if not merchant:
-            abort(404, "Merchant profile not found")
+        try:
+            low_stock_products = db.session.query(Product, ProductStock).\
+                join(ProductStock).\
+                filter(ProductStock.stock_qty <= ProductStock.low_stock_threshold).\
+                filter(ProductStock.stock_qty > 0).\
+                all()
+            
+            return [{
+                'product': product.serialize(),
+                'stock': stock.serialize(),
+                'available': stock.stock_qty > 0,
+                'low_stock': True
+            } for product, stock in low_stock_products]
+        except Exception as e:
+            logger.error(f"Error getting low stock products: {e}")
+            raise
 
-        products = Product.query.filter_by(merchant_id=merchant.id).all()
-        product_ids = [p.product_id for p in products]
+    @staticmethod
+    def get_inventory_stats(user_id):
+        try:
+            # First get the merchant profile from user_id
+            merchant = MerchantProfile.query.filter_by(user_id=user_id).first()
+            if not merchant:
+                raise ValueError(f"No merchant profile found for user ID {user_id}")
 
-        low_stock = ProductStock.query.filter(
-            ProductStock.product_id.in_(product_ids),
-            ProductStock.stock_qty <= ProductStock.low_stock_threshold
-        ).all()
+            merchant_id = merchant.id
+            logger.info(f"Fetching inventory stats for merchant: {merchant.business_name} (ID: {merchant_id})")
 
-        return low_stock
+            total_products = Product.query.filter_by(
+                merchant_id=merchant_id,
+                deleted_at=None,
+                approval_status='approved'
+            ).count()
 
-@product_stock_bp.route('/api/merchant-dashboard/products/<int:product_id>/stock', methods=['GET'])
-def get_product_stock(product_id):
-    """Get stock information for a specific product."""
-    try:
-        stock = MerchantProductStockController.get(product_id)
-        return success_response(stock.serialize())
+            total_stock = db.session.query(db.func.sum(ProductStock.stock_qty)).\
+                join(Product).\
+                filter(Product.merchant_id == merchant_id).\
+                filter(Product.deleted_at == None).\
+                filter(Product.approval_status == 'approved').\
+                scalar() or 0
+            
+            low_stock_count = db.session.query(Product).\
+                join(ProductStock).\
+                filter(Product.merchant_id == merchant_id).\
+                filter(Product.deleted_at == None).\
+                filter(Product.approval_status == 'approved').\
+                filter(ProductStock.stock_qty <= ProductStock.low_stock_threshold).\
+                filter(ProductStock.stock_qty > 0).\
+                count()
+            
+            out_of_stock_count = db.session.query(Product).\
+                join(ProductStock).\
+                filter(Product.merchant_id == merchant_id).\
+                filter(Product.deleted_at == None).\
+                filter(Product.approval_status == 'approved').\
+                filter(ProductStock.stock_qty == 0).\
+                count()
+            
+            return {
+                'total_products': total_products,
+                'total_stock': total_stock,
+                'low_stock_count': low_stock_count,
+                'out_of_stock_count': out_of_stock_count
+            }
+        except Exception as e:
+            logger.error(f"Error getting inventory stats: {e}")
+            raise
 
-    except Exception as e:
-        return error_response(str(e), 500)
+    @staticmethod
+    def get_products(user_id, page=1, per_page=10, search=None, category=None, brand=None, stock_status=None):
+        try:
+            # First get the merchant profile from user_id
+            merchant = MerchantProfile.query.filter_by(user_id=user_id).first()
+            if not merchant:
+                raise ValueError(f"No merchant profile found for user ID {user_id}")
 
-@product_stock_bp.route('/api/merchant-dashboard/products/<int:product_id>/stock', methods=['PUT'])
-def update_product_stock(product_id):
-    """Update stock information for a specific product."""
-    try:
-        data = request.get_json()
-        if not data:
-            return error_response('No data provided', 400)
+            merchant_id = merchant.id
+            logger.info(f"Fetching products for merchant: {merchant.business_name} (ID: {merchant_id})")
 
-        stock = MerchantProductStockController.update(product_id, data)
-        return success_response(stock.serialize())
-
-    except Exception as e:
-        db.session.rollback()
-        return error_response(str(e), 500)
-
-@product_stock_bp.route('/api/merchant-dashboard/products/<int:product_id>/stock/bulk-update', methods=['POST'])
-def bulk_update_product_stock(product_id):
-    """Bulk update stock information for multiple products."""
-    try:
-        data = request.get_json()
-        if not data or not isinstance(data, list):
-            return error_response('Invalid data format', 400)
-
-        results = MerchantProductStockController.bulk_update(product_id, data)
-        return success_response([stock.serialize() for stock in results])
-
-    except Exception as e:
-        db.session.rollback()
-        return error_response(str(e), 500)
-
-@product_stock_bp.route('/api/merchant-dashboard/products/stock/low-stock', methods=['GET'])
-def get_low_stock_products():
-    """Get all products with stock below their threshold."""
-    try:
-        low_stock = MerchantProductStockController.get_low_stock()
-        return success_response([stock.serialize() for stock in low_stock])
-
-    except Exception as e:
-        return error_response(str(e), 500) 
+            query = Product.query.filter_by(
+                merchant_id=merchant_id, 
+                deleted_at=None,
+                approval_status='approved'
+            )
+            
+            if search:
+                search_term = f"%{search}%"
+                query = query.filter(or_(
+                    Product.product_name.ilike(search_term),
+                    Product.sku.ilike(search_term)
+                ))
+            
+            if category:
+                # Handle both category ID and slug
+                try:
+                    category_id = int(category)
+                    query = query.filter(Product.category_id == category_id)
+                except ValueError:
+                    # If category is not a number, treat it as a slug
+                    category_obj = Category.query.filter_by(slug=category).first()
+                    if category_obj:
+                        query = query.filter(Product.category_id == category_obj.category_id)
+            
+            if brand:
+                # Handle both brand ID and slug
+                try:
+                    brand_id = int(brand)
+                    query = query.filter(Product.brand_id == brand_id)
+                except ValueError:
+                    # If brand is not a number, treat it as a slug
+                    brand_obj = Brand.query.filter_by(slug=brand).first()
+                    if brand_obj:
+                        query = query.filter(Product.brand_id == brand_obj.brand_id)
+            
+            if stock_status:
+                query = query.join(ProductStock)
+                if stock_status == 'in_stock':
+                    query = query.filter(ProductStock.stock_qty > 0)
+                elif stock_status == 'low_stock':
+                    query = query.filter(ProductStock.stock_qty <= ProductStock.low_stock_threshold)
+                    query = query.filter(ProductStock.stock_qty > 0)
+                elif stock_status == 'out_of_stock':
+                    query = query.filter(ProductStock.stock_qty == 0)
+            
+            # Get total count before pagination
+            total = query.count()
+            
+            # Apply pagination
+            products = query.order_by(desc(Product.created_at)).\
+                offset((page - 1) * per_page).\
+                limit(per_page).\
+                all()
+            
+            # Format products for frontend
+            formatted_products = []
+            for product in products:
+                stock = product.stock
+                if not stock:
+                    stock = ProductStock(product_id=product.product_id)
+                    db.session.add(stock)
+                    db.session.commit()
+                
+                formatted_products.append({
+                    'id': product.product_id,
+                    'name': product.product_name,
+                    'sku': product.sku,
+                    'category': {
+                        'id': product.category.category_id if product.category else None,
+                        'name': product.category.name if product.category else None,
+                        'slug': product.category.slug if product.category else None
+                    },
+                    'brand': {
+                        'id': product.brand.brand_id if product.brand else None,
+                        'name': product.brand.name if product.brand else None,
+                        'slug': product.brand.slug if product.brand else None
+                    },
+                    'stock_qty': stock.stock_qty if stock else 0,
+                    'low_stock_threshold': stock.low_stock_threshold if stock else 0,
+                    'available': stock.stock_qty if stock else 0,
+                    'image_url': product.media[0].url if product.media else None
+                })
+            
+            return {
+                'products': formatted_products,
+                'pagination': {
+                    'total': total,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'pages': (total + per_page - 1) // per_page
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error listing inventory products: {e}")
+            db.session.rollback()
+            raise 

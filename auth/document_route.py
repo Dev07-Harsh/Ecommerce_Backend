@@ -1,10 +1,11 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import cloudinary
 import cloudinary.uploader
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from http import HTTPStatus
+import logging
 
 from common.database import db
 from auth.models.merchant_document import MerchantDocument, DocumentType, DocumentStatus
@@ -17,8 +18,32 @@ document_bp = Blueprint('document', __name__, url_prefix='/api/merchant/document
 ALLOWED_MIME_TYPES = {
     'application/pdf',
     'image/jpeg',
-    'image/png'
+    'image/png',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv'
 }
+
+# Map MIME types to Cloudinary resource types
+CLOUDINARY_RESOURCE_TYPES = {
+    'application/pdf': 'raw',
+    'image/jpeg': 'image',
+    'image/png': 'image',
+    'application/vnd.ms-excel': 'raw',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'raw',
+    'text/csv': 'raw'
+}
+
+# Map MIME types to Cloudinary formats
+CLOUDINARY_FORMATS = {
+    'application/pdf': 'pdf',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'application/vnd.ms-excel': 'xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'text/csv': 'csv'
+}
+
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 def validate_file(file):
@@ -38,6 +63,14 @@ def validate_file(file):
     
     return True, None
 
+def get_cloudinary_resource_type(mime_type):
+    """Get the appropriate Cloudinary resource type for a given MIME type."""
+    return CLOUDINARY_RESOURCE_TYPES.get(mime_type, 'raw')
+
+def get_cloudinary_format(mime_type):
+    """Get the appropriate Cloudinary format for a given MIME type."""
+    return CLOUDINARY_FORMATS.get(mime_type)
+
 @document_bp.route('/upload', methods=['POST'])
 @jwt_required()
 def upload_document():
@@ -53,32 +86,15 @@ def upload_document():
         name: file
         type: file
         required: true
-        description: Document file (PDF, JPEG, or PNG)
+        description: Document file (PDF, JPEG, PNG, Excel, or CSV)
       - in: formData
         name: document_type
         type: string
         required: true
         description: Type of document being uploaded
-        enum: [BUSINESS_LICENSE, TAX_CERTIFICATE, ID_PROOF, ADDRESS_PROOF, BANK_STATEMENT]
     responses:
       201:
         description: Document uploaded successfully
-        schema:
-          type: object
-          properties:
-            message:
-              type: string
-            document:
-              type: object
-              properties:
-                id:
-                  type: integer
-                document_type:
-                  type: string
-                file_url:
-                  type: string
-                status:
-                  type: string
       400:
         description: Invalid request or file
       401:
@@ -118,79 +134,112 @@ def upload_document():
         # Check if document type already exists for merchant
         existing_doc = MerchantDocument.get_by_merchant_and_type(merchant.id, document_type)
         
-        # Upload to Cloudinary
-        upload_result = cloudinary.uploader.upload(
-            file,
-            folder=f"merchant_documents/{merchant.id}",
-            resource_type="raw" if file.mimetype == 'application/pdf' else "image"
-        )
-        
-        if existing_doc:
-            # Delete old file from Cloudinary
-            try:
-                cloudinary.uploader.destroy(existing_doc.public_id)
-            except cloudinary.exceptions.Error as e:
-                logger.warning(f"Failed to delete old file from Cloudinary: {str(e)}")
+        try:
+            # Determine resource type and format based on file type
+            resource_type = get_cloudinary_resource_type(file.mimetype)
+            format = get_cloudinary_format(file.mimetype)
             
-            # Update existing document
-            existing_doc.public_id = upload_result['public_id']
-            existing_doc.file_url = upload_result['secure_url']
-            existing_doc.file_name = file.filename
-            existing_doc.file_size = upload_result['bytes']
-            existing_doc.mime_type = file.mimetype
-            existing_doc.status = DocumentStatus.PENDING
-            existing_doc.admin_notes = None
-            existing_doc.verified_at = None
-            existing_doc.verified_by = None
+            # Prepare upload options
+            upload_options = {
+                'folder': f"merchant_documents/{merchant.id}",
+                'resource_type': resource_type,
+                'use_filename': True,
+                'unique_filename': True
+            }
             
-            db.session.commit()
+            # Add format for PDFs and other raw files
+            if format:
+                upload_options['format'] = format
             
-            return jsonify({
-                'message': 'Document updated successfully',
-                'document': {
-                    'id': existing_doc.id,
-                    'document_type': existing_doc.document_type.value,
-                    'file_url': existing_doc.file_url,
-                    'status': existing_doc.status.value
-                }
-            }), HTTPStatus.OK
-        else:
-            # Create new document record
-            document = MerchantDocument(
-                merchant_id=merchant.id,
-                document_type=document_type,
-                public_id=upload_result['public_id'],
-                file_url=upload_result['secure_url'],
-                file_name=file.filename,
-                file_size=upload_result['bytes'],
-                mime_type=file.mimetype,
-                status=DocumentStatus.PENDING
+            # Add specific options for PDFs
+            if file.mimetype == 'application/pdf':
+                upload_options.update({
+                    'resource_type': 'raw',
+                    'format': 'pdf',
+                    'type': 'upload'  # Explicitly set as public
+                })
+                current_app.logger.debug(f"PDF upload options: {upload_options}")
+            
+            # Upload to Cloudinary with appropriate options
+            upload_result = cloudinary.uploader.upload(
+                file,
+                **upload_options
             )
-            db.session.add(document)
+            current_app.logger.debug(f"Cloudinary upload result: {upload_result}")
             
-            # Update merchant verification status if necessary
-            if merchant.verification_status == VerificationStatus.EMAIL_VERIFIED:
-                merchant.submit_for_verification()
-            
-            db.session.commit()
-            
+            if existing_doc:
+                # Delete old file from Cloudinary
+                try:
+                    cloudinary.uploader.destroy(existing_doc.public_id)
+                except cloudinary.exceptions.Error as e:
+                    current_app.logger.warning(f"Failed to delete old file from Cloudinary: {str(e)}")
+                
+                # Update existing document
+                existing_doc.public_id = upload_result['public_id']
+                existing_doc.file_url = upload_result['secure_url']
+                existing_doc.file_name = file.filename
+                existing_doc.file_size = upload_result['bytes']
+                existing_doc.mime_type = file.mimetype
+                existing_doc.status = DocumentStatus.PENDING
+                existing_doc.admin_notes = None
+                existing_doc.verified_at = None
+                existing_doc.verified_by = None
+                
+                db.session.commit()
+                
+                return jsonify({
+                    'message': 'Document updated successfully',
+                    'document': {
+                        'id': existing_doc.id,
+                        'document_type': existing_doc.document_type.value,
+                        'file_url': existing_doc.file_url,
+                        'status': existing_doc.status.value
+                    }
+                }), HTTPStatus.OK
+            else:
+                # Create new document record
+                document = MerchantDocument(
+                    merchant_id=merchant.id,
+                    document_type=document_type,
+                    public_id=upload_result['public_id'],
+                    file_url=upload_result['secure_url'],
+                    file_name=file.filename,
+                    file_size=upload_result['bytes'],
+                    mime_type=file.mimetype,
+                    status=DocumentStatus.PENDING
+                )
+                db.session.add(document)
+                
+                # Update merchant verification status if necessary
+                if merchant.verification_status == VerificationStatus.EMAIL_VERIFIED:
+                    merchant.submit_for_verification()
+                
+                db.session.commit()
+                
+                return jsonify({
+                    'message': 'Document uploaded successfully',
+                    'document': {
+                        'id': document.id,
+                        'document_type': document.document_type.value,
+                        'file_url': document.file_url,
+                        'status': document.status.value
+                    }
+                }), HTTPStatus.CREATED
+                
+        except cloudinary.exceptions.Error as e:
+            current_app.logger.error(f"Cloudinary upload error: {str(e)}")
+            db.session.rollback()
             return jsonify({
-                'message': 'Document uploaded successfully',
-                'document': {
-                    'id': document.id,
-                    'document_type': document.document_type.value,
-                    'file_url': document.file_url,
-                    'status': document.status.value
-                }
-            }), HTTPStatus.CREATED
-    
-    except cloudinary.exceptions.Error as e:
-        db.session.rollback()
-        return jsonify({'message': f"Cloudinary upload failed: {str(e)}"}), HTTPStatus.INTERNAL_SERVER_ERROR
-    except IntegrityError:
+                'message': 'Failed to upload file to storage',
+                'error': str(e)
+            }), HTTPStatus.INTERNAL_SERVER_ERROR
+            
+    except IntegrityError as e:
+        current_app.logger.error(f"Database integrity error: {str(e)}")
         db.session.rollback()
         return jsonify({'message': 'Failed to save document'}), HTTPStatus.INTERNAL_SERVER_ERROR
     except Exception as e:
+        current_app.logger.error(f"Unexpected error: {str(e)}")
         db.session.rollback()
         return jsonify({'message': f"An error occurred: {str(e)}"}), HTTPStatus.INTERNAL_SERVER_ERROR
 

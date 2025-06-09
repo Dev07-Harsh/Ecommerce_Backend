@@ -50,15 +50,7 @@ class BrandController:
         db.session.commit()
         return brand
 
-    # @staticmethod
-    # def delete(brand_pk_id): 
-       
-    #     b = Brand.query.filter_by(brand_id=brand_pk_id, deleted_at=None).first_or_404(
-    #         description=f"Brand with ID {brand_pk_id} not found or has been deleted."
-    #     )
-    #     b.deleted_at = datetime.now(timezone.utc)
-    #     db.session.commit()
-    #     return b
+   
     
 
     @staticmethod
