@@ -14,6 +14,7 @@ from common.decorators import merchant_required
 from models.live_stream import LiveStream, LiveStreamComment, LiveStreamViewer, StreamStatus
 from models.product import Product
 from auth.models.models import MerchantProfile, User
+from live_streaming_server.services.youtube_live_service import YouTubeLiveService
 
 live_stream_bp = Blueprint('live_streams', __name__)
 
@@ -70,9 +71,44 @@ def create_live_stream():
         )
         
         db.session.add(live_stream)
+        db.session.flush()  # Get the stream ID before committing
+        
+        # Try to create YouTube Live event
+        youtube_event_data = None
+        try:
+            youtube_service = YouTubeLiveService()
+            youtube_event_data = youtube_service.create_youtube_live_event(
+                title=data['title'],
+                description=data['description'],
+                scheduled_time=scheduled_time
+            )
+            
+            if youtube_event_data:
+                live_stream.youtube_event_id = youtube_event_data['broadcast_id']
+                live_stream.youtube_broadcast_url = youtube_event_data['watch_url']
+                live_stream.youtube_stream_url = youtube_event_data['embed_url']
+                
+        except Exception as e:
+            # Log the error but don't fail the stream creation
+            print(f"Warning: Failed to create YouTube event: {str(e)}")
+        
         db.session.commit()
         
-        return success_response('Live stream created successfully', live_stream.serialize(), 201)
+        response_data = live_stream.serialize()
+        if youtube_event_data:
+            response_data['youtube_integration'] = {
+                'status': 'success',
+                'broadcast_id': youtube_event_data['broadcast_id'],
+                'watch_url': youtube_event_data['watch_url'],
+                'embed_url': youtube_event_data['embed_url']
+            }
+        else:
+            response_data['youtube_integration'] = {
+                'status': 'failed',
+                'message': 'Stream created successfully but YouTube integration failed'
+            }
+        
+        return success_response('Live stream created successfully', response_data, 201)
         
     except Exception as e:
         db.session.rollback()

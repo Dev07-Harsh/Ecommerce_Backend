@@ -1,3 +1,9 @@
+import os
+import sys
+
+# Add the parent directory to the path to import from main backend
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from flask import Flask, jsonify, request, make_response
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -15,6 +21,8 @@ from models.live_stream import LiveStream, LiveStreamComment, LiveStreamViewer, 
 # Import live streaming specific routes
 from live_streaming_server.routes.live_stream_routes import live_stream_bp
 from live_streaming_server.routes.live_stream_websocket_routes import live_stream_ws_bp, init_socketio
+from live_streaming_server.routes.youtube_admin_routes import youtube_admin_bp
+from live_streaming_server.routes.superadmin_dashboard_routes import superadmin_dashboard_bp
 import os
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
@@ -52,6 +60,11 @@ def create_live_streaming_app(config_name='default'):
                  "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
                  "allow_headers": ["Content-Type", "Authorization"]
              },
+             r"/api/superadmin/*": {
+                 "origins": ALLOWED_ORIGINS,
+                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+                 "allow_headers": ["Content-Type", "Authorization"]
+             },
              r"/ws/*": {
                  "origins": ALLOWED_ORIGINS,
                  "methods": ["GET", "POST", "OPTIONS"],
@@ -72,6 +85,8 @@ def create_live_streaming_app(config_name='default'):
     # Register blueprints
     app.register_blueprint(live_stream_bp, url_prefix='/api/live-streams')
     app.register_blueprint(live_stream_ws_bp, url_prefix='/ws')
+    app.register_blueprint(youtube_admin_bp, url_prefix='/api/live-streams/admin/youtube')
+    app.register_blueprint(superadmin_dashboard_bp, url_prefix='/api/superadmin')
 
     # Add custom headers to every response
     app.after_request(add_headers)

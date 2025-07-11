@@ -28,6 +28,15 @@ class Config:
 
     # Redis Cache
     REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+
+    # YouTube API Configuration
+    YOUTUBE_CLIENT_ID = os.getenv('YOUTUBE_CLIENT_ID')
+    YOUTUBE_CLIENT_SECRET = os.getenv('YOUTUBE_CLIENT_SECRET')
+    YOUTUBE_REDIRECT_URI = os.getenv('YOUTUBE_REDIRECT_URI', 'http://localhost:5001/api/live-streams/admin/youtube/oauth/callback')
+    YOUTUBE_SCOPES = [
+        'https://www.googleapis.com/auth/youtube',
+        'https://www.googleapis.com/auth/youtube.force-ssl'
+    ]
     CACHE_TYPE = 'redis'
     CACHE_DEFAULT_TIMEOUT = 300  # 5 minutes
 

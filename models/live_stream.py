@@ -37,6 +37,11 @@ class LiveStream(BaseModel):
     stream_key = Column(String(255), unique=True, nullable=False)  # Unique key for stream access
     stream_url = Column(String(255), nullable=True)  # RTMP URL for streaming
     
+    # YouTube Integration fields
+    youtube_event_id = Column(String(255), nullable=True)  # YouTube Live event ID
+    youtube_broadcast_url = Column(String(500), nullable=True)  # YouTube broadcast URL
+    youtube_stream_url = Column(String(500), nullable=True)  # YouTube stream URL for embedding
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
@@ -64,6 +69,9 @@ class LiveStream(BaseModel):
             "likes_count": self.likes_count,
             "stream_key": self.stream_key,
             "stream_url": self.stream_url,
+            "youtube_event_id": self.youtube_event_id,
+            "youtube_broadcast_url": self.youtube_broadcast_url,
+            "youtube_stream_url": self.youtube_stream_url,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
